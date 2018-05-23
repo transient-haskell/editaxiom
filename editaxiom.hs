@@ -1,6 +1,9 @@
-#!/usr/bin/env execthirdline.sh
+#!/usr/bin/env execthirdlinedocker.sh
 -- compile it with ghcjs and  execute it with runghc
--- set -e && port=`echo ${3} | awk -F/ '{print $(3)}'` && docker run -it -p ${port}:${port} -v $(pwd):/work agocorona/transient:new  bash -c "cd /work && mkdir -p ./static && ghcjs -itransient/src -itransient-universe/src  -iaxiom/src ${4} ${1} -o static/out && ghc -itransient/src -itransient-universe/src -iaxiom/src -threaded ${4} ${1} &&  ./transient-examples/`basename -s .hs  ${1}` ${4}  ${2} ${3}"
+-- mkdir -p ./static && ghcjs -itransient/src -itransient-universe/src  -iaxiom/src ${4} ${1} -o static/out && ghc -itransient/src -itransient-universe/src -iaxiom/src -threaded ${4} ${1} &&  ./editaxiom/`basename -s .hs  ${1}` ${4}  ${2} ${3}
+
+-- set -e && port=`echo ${3} | awk -F/ '{print $(3)}'` && docker run -it -p ${port}:${port} -v $(pwd):/work agocorona/transient:new  bash -c "cd /work && mkdir -p ./static && ghcjs -itransient/src -itransient-universe/src  -iaxiom/src ${4} ${1} -o static/out && ghc -itransient/src -itransient-universe/src -iaxiom/src -threaded ${4} ${1} &&  ./editaxiom/`basename -s .hs  ${1}` ${4}  ${2} ${3}"
+
 {-# LANGUAGE CPP, OverloadedStrings, ScopedTypeVariables, DeriveDataTypeable #-}
 
 import Control.Concurrent(threadDelay)
@@ -32,6 +35,12 @@ import GHCJS.Prim (JSVal)
 import Transient.Logged
 import Control.Concurrent.MVar
 {- TODO
+option : start/env-host/env-port
+
+añadir ejemplos
+  carpeta
+inicio automatico
+
 user authentication
 file persistence
 
@@ -64,12 +73,13 @@ doit= onBrowser $ do
   atRemote $ local $ setRState (Nothing ::Maybe ProcessHandle)
   let filenamew= boxCell "filename" 
   
-  ide filenamew <|> consoleControlFrames <|> folderNav filenamew <* resizable
+  ide filenamew <|> consoleControlFrames <|> folderNav filenamew -- <* resizable
   where
   ide filenamew= do
-    local . render .  rawHtml $ do
+    local $ (render .  rawHtml $ do
                     div ! id "entername" $ noHtml
-                    aceEdit
+                    aceEdit) <** zenEditor
+                    
     (file,source) <- editsOfCode  filenamew
     local $ when (null file) $ alert "enter source file name, for examaple: 'yourfile.hs'" >> empty
     (result, port)<- compile file source 
@@ -79,7 +89,30 @@ doit= onBrowser $ do
     (file,source) <-  folder  "."
     localIO $ setEditorContent $ pack source
     local $ filenamew .= file
-    
+
+newtype ZenEditor= ZenEditor Bool
+zenEditor= do
+
+    setRState $ ZenEditor True
+
+    render $ (div ! id "zened" ! style unzenStyle $ str "zen")  `pass` OnClick
+    ZenEditor mode <- getRState
+    setRState $ ZenEditor $ not mode
+    render $ do
+      case mode of
+        True  -> do
+            rawHtml $ forElemId "editor" $ this ! style zoomedEditorStyle
+            rawHtml $ forElemId "zened" $ clear >> this ! style zenStyle `child` str "unzeen"
+
+        False -> do
+            rawHtml $ forElemId "editor" $ this ! style unzoomedEditorStyle
+            rawHtml $ forElemId "zened" $ clear >> this ! style unzenStyle `child` str "zen"
+    where
+    unzoomedEditorStyle=  "width: 83%;height:70%;z-index:0"
+    zoomedEditorStyle=    "width: 100%;height:100%;background-color:#ffffff;z-index:10"
+    zenStyle=             "position:absolute;top:0%;left:90%;height:20px;cursor:pointer;background-color: #eeaaaa;z-index:10" 
+    unzenStyle=           "position:absolute;top:0%;left:75%;height:10px;cursor:pointer;background-color: #eeaaaa" 
+
 resizable= local $ do
   render $ rawHtml $ do
     link ! href "http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/themes/base/jquery-ui.css" 
@@ -116,9 +149,6 @@ consoleControlFrames= local $ do
             forElemId "zen" $ clear >> this ! style "position:absolute;top:75%;left:95%;height:20px;cursor:pointer;z-index:0;background-color: #eeaaaa" `child` str "zen"
   
   liftIO $ scrollBottom "frame"
-
-
- 
 
 
 folder fol= onBrowser $ do
@@ -162,10 +192,6 @@ getPort = liftIO $ do
 str s= s :: JSString
 
 
-
-
-
-
 editsOfCode :: Cell String -> Cloud (String, String)    
 editsOfCode filenamew =  local $ do 
       rlive <- liftIO $ newIORef False
@@ -205,7 +231,9 @@ compile file source = atServer $ do
     localIO $ writeFile file source !> file
     
     port <- local getPort
-    r <- execShell  $ file ++ " -p start/localhost/"++ port -- ++" &"
+    r <- execShell  $  "chmod 777 "++ file ++ " && cd `dirname "++ file ++ "` && eval ./`basename "++ file ++ "` -p start/localhost/"++ port
+              
+      --file ++ " -p start/localhost/"++ port -- ++" &"
     return (r, port)
     
 
@@ -255,7 +283,9 @@ execShell expr = onServer $ do
         empty
 
       watch r=  onServer $ syncStream $  do
-        mline  <- local $ threads 0 $ parallel $  (SMore <$> hGetLine (output r)) `catch` \(e :: SomeException) -> return SDone
+
+        mline  <- local $ threads 1 $ (parallel $  (SMore <$> hGetLine' (output r)) `catch` \(e :: SomeException) -> return SDone)
+                             <|> return (SMore "-------------------- Executing ---------------------")
         case mline of
            SDone -> empty
            SMore line ->  do
@@ -269,7 +299,24 @@ execShell expr = onServer $ do
               if ("port to listen?" `isPrefixOf` line) 
                 then return $ Just "[]"
                 else empty
-        
+        where
+        hGetLine' h= do
+          buff <- newIORef []
+          getMore buff
+          where
+
+          getMore buff= do
+            b <- hWaitForInput h 10
+            if not b 
+                then do
+                   r <-readIORef buff 
+                   if null r then getMore buff else return r 
+                else do
+                      c <- hGetChar h
+                      if c== '\n' then readIORef buff else do 
+                        modifyIORef buff $ \str -> str ++ [c]
+                        getMore buff
+
       watcherror r= onServer $ do
         local abduce
         localIO $ waitForProcess $ handle r
@@ -304,7 +351,6 @@ present result port= local $ do
 
 maybeKillProgram =  do
    ms <- getRState <|> return Nothing
-   liftIO $ print ("ISJUST",isJust ms)
    when (isJust ms) $ do 
       let s = fromJust ms
       -- code <- liftIO $ getProcessExitCode s
@@ -371,8 +417,9 @@ aceEdit  = do
     type_ "text/javascript" !
     atr "charset" "utf-8" $
     noHtml
-  span ! id "editor" ! atr "style" "width: 83%;height:70%" $ noHtml
-    
+
+  span ! id "editor" ! atr "style" "position:absolute;width: 83%;height:70%" $ noHtml
+
 
   liftIO $ threadDelay 1000000
   script ! type_ "text/javascript" $
