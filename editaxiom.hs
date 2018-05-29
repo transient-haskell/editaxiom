@@ -20,7 +20,6 @@ import System.IO.Unsafe
 import System.IO
 import System.Process
 import Transient.Internals 
-import Transient.Indeterminism
 import Transient.Move.Internals hiding(pack,JSString)
 import Transient.Parse
 import qualified Data.ByteString.Lazy.Char8 as BS
@@ -32,8 +31,6 @@ import GHCJS.Marshal (fromJSValUnchecked)
 import GHCJS.Prim (JSVal)
 #endif
 
-import Transient.Logged
-import Control.Concurrent.MVar
 {- TODO
 option : start/env-host/env-port
 
@@ -155,7 +152,7 @@ folder fol= onBrowser $ do
   local $ render $ rawHtml $ div ! id "dir" ! clas "resize" ! style "overflow:auto;position:absolute;left:85%;height:70%" $ noHtml
 
   files <- atRemote . localIO $ getDirectoryContents fol
-  folder' "." $ tail files
+  folder' "." $ filter (/= ".")  files
   where
   folder' :: String -> [String] -> Cloud (String,String)
   folder' dir files=  do
@@ -274,22 +271,26 @@ execShell expr = onServer $ do
       makeinput r= onServer $ do 
         local $ setSynchronous False
         local abduce
-        inp <- atBrowser . local . render . at "#frameinput" Insert  $ inputString Nothing 
-                                                                   ! placeholder "command"  
-                                                                   ! atr "size" "100"
-                                                                   `fire` OnChange
+
+        inp <- atBrowser . local . render $ do  
+            let command= boxCell "command" 
+            r <- at "#frameinput" Insert $ mk command Nothing 
+                                          ! placeholder "command"  
+                                          ! atr "size" "100"
+                                          `fire` OnChange
+            command .= ""
+            return r
        
         localIO $ do print inp ; hPutStrLn (input1 r) inp ; hFlush (input1 r) 
         empty
 
       watch r=  onServer $ syncStream $  do
 
-        mline  <- local $ threads 1 $ (parallel $  (SMore <$> hGetLine' (output r)) `catch` \(e :: SomeException) -> return SDone)
-                             <|> return (SMore "-------------------- Executing ---------------------")
+        mline  <- local $ threads 0 $ (parallel $  (SMore <$> hGetLine' (output r)) `catch` \(e :: SomeException) -> return SDone)
+                          --   <|> async (return  $ SMore "-------------------- Executing ---------------------")
         case mline of
            SDone -> empty
            SMore line ->  do
-
               atRemote $ local $ do
                   render . at "#frame"  Append  $ rawHtml $ pre ! style "line-height:50%;word-wrap:break-word" $line
 
@@ -341,8 +342,7 @@ present result port= local $ do
       Just "[]" -> do
 
         liftIO $ js_setAnnotations  "[]"
-
-        liftIO $ wopen $ "http://192.168.99.100:" <> (pack $ show $ nodePort serverNode) <>"/relay/localhost/"<> pack port <> "/" 
+        liftIO $ wopen $ "http://" <> (pack $ nodeHost serverNode) <> ":" <> (pack $ show $ nodePort serverNode) <>"/relay/localhost/"<> pack port <> "/" 
 
 
       Just errors ->
