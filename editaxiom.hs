@@ -1,10 +1,9 @@
 #!/usr/bin/env execthirdlinedocker.sh
--- compile it with ghcjs and  execute it with runghc
--- mkdir -p ./static && ghcjs -itransient/src -itransient-universe/src  -iaxiom/src ${4} ${1} -o static/out && ghc -itransient/src -itransient-universe/src -iaxiom/src -threaded ${4} ${1} &&  ./editaxiom/`basename -s .hs  ${1}` ${4}  ${2} ${3}
 
--- set -e && port=`echo ${3} | awk -F/ '{print $(3)}'` && docker run -it -p ${port}:${port} -v $(pwd):/work agocorona/transient:new  bash -c "cd /work && mkdir -p ./static && ghcjs -itransient/src -itransient-universe/src  -iaxiom/src ${4} ${1} -o static/out && ghc -itransient/src -itransient-universe/src -iaxiom/src -threaded ${4} ${1} &&  ./editaxiom/`basename -s .hs  ${1}` ${4}  ${2} ${3}"
+-- mkdir -p ./static && ghcjs -i../transient/src -i../transient-universe/src  -i../axiom/src -DDEBUG ${1} -o static/out && ghc -DDEBUG -threaded -i../transient/src -i../transient-universe/src -i../axiom/src  ${1} && ./`basename $1 .hs`  ${2} ${3} 
 
-{-# LANGUAGE CPP, OverloadedStrings, ScopedTypeVariables, DeriveDataTypeable #-}
+
+{-# LANGUAGE CPP, FlexibleContexts,OverloadedStrings, FlexibleInstances, UndecidableInstances, ScopedTypeVariables, DeriveDataTypeable #-}
 
 import Control.Concurrent(threadDelay)
 import Control.Exception(SomeException, catch)
@@ -12,7 +11,7 @@ import Control.Monad
 import Control.Monad.State hiding (get)
 import Data.IORef
 import Data.Monoid
-import GHCJS.HPlay.View hiding (input, option)
+import GHCJS.HPlay.View hiding (input, option, select)
 import GHCJS.HPlay.Cell
 import Prelude hiding (div, id, span)
 import System.Directory
@@ -23,13 +22,23 @@ import Transient.Internals
 import Transient.Move.Internals hiding(pack,JSString)
 import Transient.Parse
 import qualified Data.ByteString.Lazy.Char8 as BS
-import Data.Maybe
 import Data.List hiding(span)
 import Data.Typeable
+
 #ifdef ghcjs_HOST_OS
 import GHCJS.Marshal (fromJSValUnchecked)
 import GHCJS.Prim (JSVal)
+import GHCJS.Marshal
+-- import           GHCJS.Foreign.Internal
+#else 
+import Data.TCache hiding (onNothing)
+import Data.TCache.DefaultPersistence
+import Data.TCache.IndexQuery
+import Control.Monad.STM(atomically)
+-- import qualified Data.HashTable.IO as HT
 #endif
+
+
 
 {- TODO
 option : start/env-host/env-port
@@ -38,8 +47,8 @@ añadir ejemplos
   carpeta
 inicio automatico
 
-user authentication
-file persistence
+user authentication x
+file persistence  x
 
 add compiler service as a compile.hs which uses the docker image
   compile :: Source -> Tar(Binary,JScript)
@@ -53,41 +62,175 @@ add compiler service as a compile.hs which uses the docker image
  chat edicion simultanea, widgets
 -}
 
+#ifdef ghcjs_HOST_OS 
+#define GHC(exp) return undefined
+#else 
+#define GHC(exp) (exp)
+#endif
 
--- main= keep $ initNode $  onBrowser $ synchr $ do
---   -- local $ setSynchronous True >> return ()
---   line  <- local $  threads 0 $ choose[1..10::Int] 
---   localIO $ print ("1",line)
---   line2 <- atRemote $ synchr $ local $  choose [100..102 :: Int] --localIO $ print line -- >> empty :: Cloud String
---   localIO $ print ("2", line,line2) 
-  
 
-main = keep . initNode $  doit
-  
-    
+
+main =   do
+  GHC(databaseIndices)
+  keep $ initNode doit
+
+
+#ifndef ghcjs_HOST_OS
+
+databaseIndices=  do
+
+  index userName
+  index sharedDoc
+  index sharedNode
+  index sharedOwner
+  index sharedUser
+  index connectedUser
+
+#endif
+
+
+newtype Port= Port String deriving (Read,Show,Typeable)
+
 
 doit= onBrowser $ do
-  atRemote $ local $ setRState (Nothing ::Maybe ProcessHandle)
+  port <- authenticate 
+  verifyDir 
+
   let filenamew= boxCell "filename" 
   
-  ide filenamew <|> consoleControlFrames <|> folderNav filenamew -- <* resizable
+  ide filenamew port <|> consoleControlFrames  <|>  folderNav filenamew :: Cloud () -- <* resizable 
   where
-  ide filenamew= do
+  ide filenamew port= do
     local $ (render .  rawHtml $ do
                     div ! id "entername" $ noHtml
                     aceEdit) <** zenEditor
                     
     (file,source) <- editsOfCode  filenamew
     local $ when (null file) $ alert "enter source file name, for examaple: 'yourfile.hs'" >> empty
-    (result, port)<- compile file source 
+    result <- compile file source port
     present result port
-  
+
   folderNav filenamew=  do
-    (file,source) <-  folder  "."
+    UserName u <- local getState
+    (file,source) <-  folder  u u
     localIO $ setEditorContent $ pack source
     local $ filenamew .= file
 
+type Name= String
+type Pass= String
+type Email= String
+
+#ifndef ghcjs_HOST_OS
+
+data User= User{ userName:: Name, email :: Email, userPassword :: Pass, userConnected :: Maybe (DBRef Connected)}
+            deriving (Read,Show, Typeable)
+
+type File= String 
+type ServerNode= String
+type WebNode= String
+-- newtype Invites= Invites [(Node,File)] deriving (Read,Show,Typeable)
+
+  
+data Shared= Shared{ sharedId     :: Int
+                   , sharedDoc    :: File
+                   , sharedNode   :: Node
+                   , sharedOwner  :: String
+                   , sharedUser   ::String}
+                   deriving (Read,Show,Typeable)
+                   
+instance Indexable Shared where key Shared{sharedId=id}= "Shared#"++show id
+
+data Connected= Connected{ connectedId :: Int,connectedUser :: DBRef User, connectedHost :: Node
+                         , connectedWebNode :: Node} deriving (Read,Show, Typeable)
+
+instance Indexable Connected where key = (++) "Connected#"  . show . connectedId
+
+instance Indexable User where key = userName
+instance (Show a, Read a) => Serializable a where
+  serialize  = pack . show
+  deserialize= read . unpack
+#endif
+
+newtype UserName= UserName String deriving(Read,Show, Typeable)
+
+verifyDir =  do
+  UserName u <- local getState <|> error "verifyDir: no user set"
+  atServer $ do
+      exist <- localIO $ doesDirectoryExist u 
+      when (not exist) $ do 
+          localIO $ createDirectory  u 
+          localIO $ callCommand $ "cp -r ./editaxiom/examples/* "++ u
+          return()
+
+authenticate :: Cloud String
+authenticate = do
+  local $ render $ rawHtml $ div ! id "auth" ! style  "position:absolute;width:50%;height: 10%;margin-left: 50%" $ noHtml
+  auth ""
+  where
+  auth :: String -> Cloud  String
+  auth n = do
+    (n,p,p') <- local $ render $ at "#auth" Insert $ 
+                  (,,) <$> inputString (Just n) ! placeholder "username"  ! size "8"
+                       <*> inputPassword ! size "8"
+                       <*> inputPassword ! size "8" `fire` OnChange
+                       <** inputSubmit ("ok" ::String) `fire` OnClick
+    mr <- atRemote $ local $ do
+#ifndef ghcjs_HOST_OS
+            let ruser= getDBRef n
+            mu <- liftIO $ atomically $ readDBRef ruser 
+            case mu of
+                Nothing -> 
+                  if p== p' 
+                    then do
+                      port <-  liftIO $ getPort
+                      on <-  updateConnectionInfo port
+                      liftIO $ atomically $ newDBRef (User n p  [] $ Just on); 
+                      return $ Just (n ,port) 
+                    else return Nothing
+                Just (user@User{userPassword=pstored}) -> do
+                  port <- liftIO getPort
+                  if p == pstored then do
+                       on <- updateConnectionInfo port
+                       liftIO $ atomically $ do
+                          writeDBRef ruser $ user{userConnected= Just on}  -- XXX como borrarlo cuando se desconecta????
+                          return $ Just (n,port)
+                  else return Nothing
+#else 
+            undefined  :: TransIO (Maybe (String,String))
+
+#endif
+
+    case mr of
+      Nothing ->   auth n 
+      Just (r,port) -> do
+        setState $ UserName n 
+
+        local $ render $ at  "#auth" Insert $ do
+            rawHtml $ clear >> span n
+            (span  (str " change user") ! style "cursor:pointer")  `pass` OnClick
+            return () 
+        auth n
+       <|> return port
+
+    where
+    size= atr "size"
+#ifndef ghcjs_HOST_OS
+
+    updateConnectionInfo port= do
+      id <- genGlobalId
+      host <- getMyNode
+      webNode' <- liftIO createWebNode
+      webNode'' <- setConnectionIn webNode'
+      let webNode'''= webNode''{nodePort= read port}
+      addNodes[webNode''']
+      liftIO $ atomically $ newDBRef (Connected id (getDBRef n) host webNode''' )
+
+#endif
+        
+      
+
 newtype ZenEditor= ZenEditor Bool
+
 zenEditor= do
 
     setRState $ ZenEditor True
@@ -105,22 +248,22 @@ zenEditor= do
             rawHtml $ forElemId "editor" $ this ! style unzoomedEditorStyle
             rawHtml $ forElemId "zened" $ clear >> this ! style unzenStyle `child` str "zen"
     where
-    unzoomedEditorStyle=  "width: 83%;height:70%;z-index:0"
+    unzoomedEditorStyle=  "width: 83%;height:68%;z-index:0"
     zoomedEditorStyle=    "width: 100%;height:100%;background-color:#ffffff;z-index:10"
-    zenStyle=             "position:absolute;top:0%;left:90%;height:20px;cursor:pointer;background-color: #eeaaaa;z-index:10" 
-    unzenStyle=           "position:absolute;top:0%;left:75%;height:10px;cursor:pointer;background-color: #eeaaaa" 
+    zenStyle=             "position:absolute;top:2%;left:95%;height:20px;cursor:pointer;background-color: #eeaaaa;z-index:10" 
+    unzenStyle=           "position:absolute;top:2%;left:75%;height:20px;cursor:pointer;background-color: #eeaaaa" 
 
-resizable= local $ do
-  render $ rawHtml $ do
-    link ! href "http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/themes/base/jquery-ui.css" 
-         ! atr "rel" "stylesheet" 
-         ! atr "type" "text/css" 
-    script ! src "http://ajax.googleapis.com/ajax/libs/jquery/1.5/jquery.min.js" $ noHtml
-    script ! src "http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/jquery-ui.min.js" $ noHtml
+-- resizable= local $ do
+--   render $ rawHtml $ do
+--     link ! href "http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/themes/base/jquery-ui.css" 
+--          ! atr "rel" "stylesheet" 
+--          ! atr "type" "text/css" 
+--     script ! src "http://ajax.googleapis.com/ajax/libs/jquery/1.5/jquery.min.js" $ noHtml
+--     script ! src "http://ajax.googleapis.com/ajax/libs/jqueryui/1.8/jquery-ui.min.js" $ noHtml
 
-  liftIO $ threadDelay 1000000
-  liftIO resizejs
-  return ()
+--   liftIO $ threadDelay 1000000
+--   liftIO resizejs
+--   return ()
 
 clas= atr "class"
 
@@ -148,39 +291,92 @@ consoleControlFrames= local $ do
   liftIO $ scrollBottom "frame"
 
 
-folder fol= onBrowser $ do
-  local $ render $ rawHtml $ div ! id "dir" ! clas "resize" ! style "overflow:auto;position:absolute;left:85%;height:70%" $ noHtml
+folder user fol= onBrowser $ do
+  local $ render $ rawHtml $ div ! clas "resize" ! style "overflow:auto;position:absolute;left:85%;height:68%" 
+                 $ div ! id "dirs" $ do
+                     div ! id "invites" $ b $ str "Invites"
+                     div ! id "dir" $ b $ str "Folder"
+                     
+  (node,files) <- atServer . local $ (,) <$> getMyNode <*> liftIO (getDirectoryContents fol >>= return . sort)
+  -- setRenderTag "dir"
 
-  files <- atRemote . localIO $ getDirectoryContents fol
-  folder' "." $ filter (/= ".")  files
+  invites <|> (folder' node "." $ map ((fol++"/") ++) files) 
   where
-  folder' :: String -> [String] -> Cloud (String,String)
-  folder' dir files=  do
-    file <- local . render $ 
-          at "#dir" Insert $ do
-                    rawHtml $ b $ "folder: " <> dir
-                    foldr  (<|>) empty [pre f ! style "cursor:pointer" 
-                                          `pass` OnClick >> return f | f <- files]
+  invites= invitesNew <|> currentInvites user
+    where
+    invitesNew= do
+        (n,f) <- atRemote $ local getMailbox :: Cloud (Node,String)
+        elemFolder "#invites" n "" f
+         
+    currentInvites user= atServer $  do
+       is <- localIO $ GHC(atomically $ select  (sharedNode,sharedDoc) $ sharedUser .==. user)
+       foldr  (<|>) empty [elemFolder "#invites" n "" f | (n,f) <- is]
+     
+     
+  folder' :: Node  -> String -> [String] -> Cloud (String,String)
+  folder' n  dir files= do
+      local . render $ rawHtml $ b $ "folder: " <> dir
+      foldr  (<|>) empty [elemFolder "#dir" n dir f | f <- files]
     
+    
+
+  elemFolder tag node dir file= do
+    local $ render $ at tag Append $ pre file ! style "cursor:pointer" `pass` OnClick >> return ()
     let filedir= if file== ".." 
-                   then  take (let is= elemIndices '/' dir 
-                               in if null is then length dir else last is) dir 
-                   else dir ++ "/"++ file
+                    then  take (let is= elemIndices '/' dir 
+                                in if null is then length dir else last is) dir 
+                    else if null dir then file else dir ++ "/"++ file
 
-    r <- atRemote $  localIO $ do
+    r <- atServer $ runAt node $ localIO $ do
 
-      isFile <- doesFileExist  filedir !>  ("FILEDIR",filedir,file)
-      case isFile of 
-        True  -> Right <$> do  source <- readFile filedir 
-                                     `catch` \(e:: SomeException) -> return "File is not a text"
-                               return (filedir, source)
+              isFile <- doesFileExist  filedir !>  ("FILEDIR",filedir,file)
+              case isFile of 
+                  True  -> Right <$> do  source <- readFile filedir 
+                                           `catch` \(e:: SomeException) -> return "File is not a text"
+                                         return (filedir, source)
 
-        False -> Left  <$> tail <$> liftIO (getDirectoryContents filedir)
+                  False -> Left  <$> liftIO (getDirectoryContents filedir >>= return . sort)
     case r of
-      Right fileinfo -> return fileinfo 
-      Left files  -> folder' filedir files     
+        Right fileinfo -> return fileinfo 
+        Left files  -> do
+             let id1= filedir -- id1 <- genNewId
+             folder' node  filedir files
 
-getPort = liftIO $ do
+--   invites1 = do
+--     user <- local getState :: Cloud User
+--     userNames <- localIO $ do
+--                  ur <- atomically $ indexOf userName 
+--                  return $ fst $ unzip ur
+
+--     inv <- atServer $  GHC (exploreNet $ local $ getInvites userNames) :: Cloud [(Node,File,Connected)]
+--     -- Invites inv  <- local getMailbox <|> (atServer $ localIO $ currentInvites $ userName user)  
+      
+--     local $ render $ rawHtml $ b $ str "invites:"
+--     foldr (<|>) empty [elemFolder n "" f | (n,f,c) <- inv]
+--     where
+-- #ifndef ghcjs_HOST_OS
+--     getInvites :: [String] -> TransIO [(Node,File,Connected)]
+--     getInvites users = do
+--       modified <- liftIO $ newEmptyMVar
+
+--       single $ liftIO $ addTrigger $ \ref (ma :: Maybe Shared) 
+--                                    -> unsafeIOToSTM $ putMVar modified ()
+
+--       waitEvents (takeMVar modified) <|> return ()
+--       liftIO $ atomically $ select  (sharedNode,sharedDoc,sharedConnected) 
+--                             $ foldr (.||.) emptySet  $ map (sharedUser .==.) users
+--       where
+--       emptySet :: STM [DBRef Shared]
+--       emptySet= return []
+-- #endif
+    
+
+    
+  -- currentInvites user= GHC(
+  --   let userRef = getDBRef user
+  --   in Invites <$> (atomically $ (do u <- readDBRef userRef ; return $ fmap userInvites u) `onNothing` return []))
+
+getPort = do
   x <- atomicModifyIORef counter $ \n -> (n + 1, n + 1)
   return . show $ 8000 + x
   where
@@ -189,49 +385,158 @@ getPort = liftIO $ do
 str s= s :: JSString
 
 
+
+newtype Live= Live Bool deriving (Typeable,Read,Show)
+
+instance Monoid Bool where 
+  mempty = False
+  mappend= (||)
+
 editsOfCode :: Cell String -> Cloud (String, String)    
-editsOfCode filenamew =  local $ do 
-      rlive <- liftIO $ newIORef False
-      fileNameWidget  **> saveCompile  <|> changeContent rlive
-      content <- copyContent
-      name <- get filenamew
-      liftIO $ js_setAnnotations  "[]"
-      return (name,content)
+editsOfCode filenamew =  do 
+      fileNameWidget  **> saveCompile  <|> changeContent 
+      local $ do
+         content <-  copyContent
+         name <- get filenamew
+         liftIO $ js_setAnnotations  "[]"
+         return (name,content)
   where
-    fileNameWidget = render $ at "#entername" Insert 
-                      $ mk filenamew Nothing 
-                      ! placeholder "enter yourfilename.hs please" 
+    fileNameWidget = local $ render $ at "#entername" Insert 
+                                    $ mk filenamew Nothing 
+                                    ! placeholder "enter yourfilename.hs please" 
   
-    saveCompile=  render (at "#entername" Append $ inputSubmit ("save/compile" ::String) `fire` OnClick >> return())
+    saveCompile=  local $ render (at "#entername" Append $ inputSubmit ("save/compile" ::String) `fire` OnClick >> return())
   
-    changeContent rlive=  do
-      liveCoding rlive  <|>  setLive rlive
+    changeContent =  do
+      UserName currentUser <- local getState
+
+      local $ setRState $ Live False
+      typingControl currentUser   <|>  setLive 
       
       where 
-      liveCoding rlive= do
-          react onmodify $ return () 
-          r <- liftIO $ readIORef rlive 
-          if r then return () else empty 
+      typingControl currentUser = do
 
-    setLive rlive= do
+        delta <- local $ do
+              ModifyEvent delta <- react onmodify $ return () 
+              liftIO $ deltaToTuple delta
+        interpretDelta delta <|> return ()
+        -- if invited then atRemote 
+
+        Live r <- local  getRState 
+        if r then return () else empty 
+        where
+        interpretDelta (iniline,inicol,endline,endcol,action,content)=  do
+          -- showDelta delta
+
+          guard (iniline==endline-1) 
+         
+          l <- localIO getCurrentLine 
+          local $ do
+              setParseString $ BS.pack $ unpack l
+              dropUntilToken  "-- "
+              string "invite" 
+          filename <- local $ get filenamew
+          do
+              local $ string "folder"
+              user <- local parseString
+              cancelIfSelf user
+              inviteTo True (BS.unpack user) filename
+            <|> do
+              user <- local parseString
+              cancelIfSelf user
+              inviteTo False (BS.unpack user) filename
+          where
+          cancelIfSelf user= local $ do
+              if user ==  (BS.pack  currentUser) then do liftIO $ insertText  " : You can not invite yourself" ; empty
+                        else return ()
+
+          inviteTo shareFolder user file= do
+              let fil= if shareFolder then take (lastIndexOf '/' file) file else file
+
+              found <- atServer $ GHC( exploreNet $ localIO $ atomically $ select userName $ userName .==. user) :: Cloud [String]
+              if  null found then insertInEditor "user not found"
+                
+               else do
+                isOnline <- atServer $ loggedc $ do 
+#ifndef ghcjs_HOST_OS
+
+                    nodeFile <- local getMyNode
+                    sharedId <- local genGlobalId
+                    let newReg=  Shared
+                                            { sharedId        =    sharedId
+                                            , sharedDoc       =    fil
+                                            , sharedNode      =    nodeFile
+                                            , sharedOwner     =    currentUser
+                                            , sharedUser      =    user}
+    
+                    exploreNet $   do
+                            localIO $ atomically $ newDBRef newReg
+                            thisNode <- local  getMyNode
+                            wnds <- localIO $ atomically $ select connectedWebNode $ connectedUser .==. (getDBRef user :: DBRef User)
+                            localIO $ print wnds
+                            return (not $ null wnds) <|> notifyWebNodes nodeFile fil wnds
+#else 
+                            error "this should not be executed" 
+#endif
+    
+    
+                      -- -- mclustered $ do
+                      --     us <-localIO $
+                      --       (readIORef usersOnline >>= \us -> return $ fmap Right $ lookup user us)
+                      --           `onNothing` (Left <$> GHC(atomically $ readDBRef $ getDBRef user) )
+                          
+                              
+                      --     case us of
+                      --       Left Nothing -> return Nothing
+                      --       Left (Just (_ :: User)) -> do 
+                      --                 inviteAction user nodeFile shareFolder fil 
+                      --                 return $ Just False
+                      --       Right webnodes -> do
+                      --         inv <- inviteAction user nodeFile shareFolder fil 
+                      --         mapM_ (\wn -> runAt wn $ local $ putMailbox $ Invites inv) webnodes
+                      --         return $ Just True
+
+                insertInEditor $ case  isOnline of
+                  True  -> "-- invitation sent"
+                  False -> "-- invitation sent, but user not online"
+
+            where
+            notifyWebNodes node doc wnds=  callNodes'  wnds (<|>) empty $ local $ putMailbox ((node,doc) :: (Node,String)) >> empty
+            insertInEditor txt= atBrowser $ localIO $ insertText txt
+
+--             inviteAction user nodeFile shareFolder fil= local $ do
+-- #ifndef ghcjs_HOST_OS
+--               let userRef = getDBRef $ key User{userName=user}
+--               liftIO $ atomically $ do
+--                 user@User{userInvites=inv} <- readDBRef userRef `onNothing` error ("User not found: " ++ user)
+--                 let inv'= (nodeFile,fil):inv
+--                 writeDBRef userRef $ user{userInvites= inv'}
+--                 return inv'
+-- #else 
+--               empty :: TransIO [(Node, String)]
+-- #endif
+                
+            lastIndexOf c str= last $ elemIndices c str
+
+    setLive = local $ do
         r <- render $ at "#entername" Append $ getCheckBoxes 
                     $ setCheckBox False ("autosave" :: String) `fire` OnChange 
                     <++ span ("autosave" ::String)
-        liftIO $ writeIORef rlive $ if not $ null r then True else False  
+        setRState $ Live $ if not $ null r then True else False  
         empty     
+
  
 
-compile :: String -> String -> Cloud (Maybe String, String)
-compile file source = atServer $ do
-    local maybeKillProgram
+compile :: String -> String -> String -> Cloud (Maybe String)
+compile file source  port = atServer $ do
+    localIO $ maybeKillProgram port
 
     localIO $ writeFile file source !> file
     
-    port <- local getPort
     r <- execShell  $  "chmod 777 "++ file ++ " && cd `dirname "++ file ++ "` && eval ./`basename "++ file ++ "` -p start/localhost/"++ port
-              
+    -- r <- execShell file ["-p","start/localhost/"++ port]        
       --file ++ " -p start/localhost/"++ port -- ++" &"
-    return (r, port)
+    return r
     
 
 subst _ _ [] = []
@@ -247,18 +552,12 @@ createProcess1 x= createProcess x
 createProcess1 x= return (Just $ error "IIII", Just $ error "OOOOO", Just $ error "ERRR", error "HANDLE")
 #endif 
 
-onlyOnServer :: x -> x
-onlyOnServer x =
-#ifndef ghcjs_HOST_OS
-     x
-#else
-     error "this statement should be executed on server" 
-#endif 
+
 
 
 type Errors= String
-execShell :: String -> Cloud (Maybe Errors) -- [(BS.ByteString,Int,Int,BS.ByteString)]
-execShell expr = onServer $ do
+execShell :: String  -> Cloud (Maybe Errors) -- [(BS.ByteString,Int,Int,BS.ByteString)]
+execShell expr  = onServer $ do
       return () !> ("EXECUTING", expr)
       r <- lazy $ liftIO $ createProcess1 $ (shell expr){std_in=CreatePipe,std_err=CreatePipe,std_out=CreatePipe}
       local $ setRState $ Just $ handle r
@@ -323,16 +622,15 @@ execShell expr = onServer $ do
         localIO $ waitForProcess $ handle r
         errors <- localIO $  hGetContents (err r)
         atBrowser $ local $ do
-           render . at "#frame"  Append  $ rawHtml $ pre ! style "color:red;word-wrap:break-word" $ errors -- $ subst "\r" "<br>" errors
+           render . at "#frame"  Append  $ rawHtml $ pre ! style "color:red;word-wrap:break-word" $ errors
            liftIO $ scrollBottom "frame"
         r <- local $ Just <$> parseResp errors
         localIO $ print r
         return r
 
 
-type Port= String
-present :: Maybe Errors -> Port -> Cloud()
-present result port= local $ do
+present :: Maybe Errors  -> String -> Cloud()
+present result  port= local $ do
   serverNode <- getWebServerNode
   render . rawHtml $ do
 
@@ -349,13 +647,17 @@ present result port= local $ do
         liftIO $ js_setAnnotations $ toJSString errors
 
 
-maybeKillProgram =  do
-   ms <- getRState <|> return Nothing
-   when (isJust ms) $ do 
-      let s = fromJust ms
-      -- code <- liftIO $ getProcessExitCode s
+maybeKillProgram port =  
+  callCommand ("pkill --full "++ port)  `catch` \(e :: SomeException) -> print e
+  --  ms <- getRState <|> return Nothing
+  --  when (isJust ms) $  liftIO $ do 
+  --     let s = fromJust ms
+  --     -- code <- liftIO $ getProcessExitCode s
 
-      async $ terminateProcess s
+  --     terminateProcess s
+  --     e <- waitForProcess s
+  --     print e
+  --     return ()
 
 
      
@@ -411,14 +713,14 @@ aceEdit  = do
 
   styleElem ! type_ "text/css" ! atr "media" "screen" $
     ("#editor {" :: String) ++
-    "position:absolute;" ++ "width: 83%;" ++ "height:70%" ++ "}"
+    "position:absolute;" ++ "width: 83%;" ++ "height:68%" ++ "}"
 
   script ! src "//cdnjs.cloudflare.com/ajax/libs/ace/1.3.2/ace.js" !
     type_ "text/javascript" !
     atr "charset" "utf-8" $
     noHtml
 
-  span ! id "editor" ! atr "style" "position:absolute;width: 83%;height:70%" $ noHtml
+  span ! id "editor" ! atr "style" "position:absolute;width: 83%;height:68%" $ noHtml
 
 
   liftIO $ threadDelay 1000000
@@ -446,22 +748,37 @@ foreign import javascript unsafe "editor.getSession().setAnnotations(eval($1))"
 copyContent :: TransIO String
 copyContent = liftIO $ js_copyContent >>= fromJSValUnchecked
 
-foreign import javascript safe "editor.getSession().on('change',$1)"
+foreign import javascript safe "editor.session.on('change',$1)"
    js_onmodify :: JSVal -> IO ()
 
-foreign import javascript safe "editor.getSession().on('change',alert('no'))"
-    js_nomodify :: IO ()
+foreign import javascript safe "alert(JSON.stringify($1))" showDelta :: JSVal -> IO()
 
---newtype ModifyEvent = ModifyEvent JSVal deriving Typeable
-onmodify ::   (() ->IO()) -> IO ()
+-- foreign import javascript safe "editor.getSession().on('change',alert('no'))"
+--     js_nomodify :: IO ()
+
+newtype ModifyEvent = ModifyEvent JSVal deriving Typeable
+onmodify ::   (ModifyEvent ->IO()) -> IO ()
 onmodify continuation= do
-   cb <- makeCallback  (continuation ())
-   js_onmodify cb
+  cb <- makeCallback1 ModifyEvent continuation
+  js_onmodify cb
 
-foreign import javascript unsafe "$('#editor').resizable({ alsoResize: '.resize' });$('.resize').resizable({ alsoResize: '.resize' });"  resizejs :: IO()
+--foreign import javascript unsafe "$('#editor').resizable({ alsoResize: '.resize' });$('.resize').resizable({ alsoResize: '.resize' });"  resizejs :: IO()
 
+foreign import javascript unsafe "editor.getSession().insert(editor.getCursorPosition(), $1)"
+  insertText :: JSString -> IO()
+
+foreign import javascript unsafe "editor.session.getLine(editor.getCursorPosition().row)" 
+  getCurrentLine ::  IO JSString
+
+foreign import javascript unsafe "[$1.start.row, $1.start.column,$1.end.row,$1.end.column,$1.action,$1.lines]"
+  deltaToArray :: JSVal -> IO JSVal
+
+deltaToTuple :: JSVal  -> IO (Int,Int,Int,Int,String,[String])
+deltaToTuple delta=  deltaToArray delta >>= fromJSValUnchecked
 
 #else
+newtype ModifyEvent = ModifyEvent () deriving Typeable
+
 resizejs= undefined
 wopen :: JSString -> IO ()
 wopen= undefined
@@ -472,12 +789,44 @@ js_setAnnotations = undefined
 scrollBottom :: JSString -> IO()
 scrollBottom= undefined
 
+showDelta= undefined
 
 copyContent :: TransIO String
 copyContent = empty
 
-onmodify ::   (() ->IO()) -> IO ()
+onmodify ::   (ModifyEvent ->IO()) -> IO ()
 onmodify= undefined
 js_nomodify= undefined
+fromJSVal= undefined
+deltaToTuple = undefined :: () -> IO   (Int,Int,Int,Int,String,[String])
+
+getCurrentLine :: IO JSString
+getCurrentLine= undefined
+insertText=undefined
 #endif
-    
+
+
+exploreNet :: (Loggable a,Monoid a) => Cloud a  -> Cloud a
+exploreNet action = do
+   r <-  action
+  --  n <- localIO randomIO
+   nodes' <- local getNodes
+   r' <- callNodes' nodes'  (<>) mempty $ do
+    -- ns<- readIORef requestHistory
+    --if n `elem` ns then return Nothing else do
+      -- t  <- getCPUTime 
+      -- HT.insert requestHistory n time
+      nodes <- local getNodes
+      callNodes' (nodes \\ nodes')  (<>) mempty $ exploreNet action 
+   return $ r <> r'
+
+-- deletekeys interval= do 
+--    time <- waitEvents $ do
+--               threadWait $ interval * 1000000
+--               t  <- getCPUTime 
+--               return t
+--    liftIO $ do
+--      vs <- fromList requestHistory
+--      mapM (handle time) vs
+--    where
+--    handle time (k,t)= when (time - t > 2000000) $ HT.delete k
