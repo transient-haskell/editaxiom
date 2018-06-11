@@ -1,6 +1,6 @@
 # editaxiom
 Experimental Web IDE for Haskell using transient
-
+![image](https://files.gitter.im/Transient-Transient-Universe-HPlay/Lobby/tztJ/image.png)
 
 Now you can play with it with
 
