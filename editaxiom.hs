@@ -75,17 +75,16 @@ add compiler service as a compile.hs which uses the docker image
 
 
 
--- main2= keep $ initNode $ onBrowser $ do
---   node <- local getMyNode
---   atRemote $ local $ return $ str "hi"
---   r <- atRemote $  do
---     local $ GHC(updateConnectionInfo node "pepe") >> return ()
+main1= keep $ initNode $ onBrowser $ do
+  node <- local getMyNode
+  atRemote $ local $ return $ str "hi"
+  r <- atRemote $  do
+    local $ GHC(updateConnectionInfo node "pepe") >> return ()
     
---     nodes <- local getNodes
---     runAt (nodes !! 0) $ do
---         (runAt (nodes !! 1) $ localIO (alert "hello") >> empty >> return ()) <|> local (alert "world")
---         return $ str "world2"
---   localIO $ print r
+    nodes <- local getNodes
+    (runAt (nodes !! 1) $ (local $ render $ rawHtml $ p $ str "hello") >> local ( return ())) <|> (local $ render $ rawHtml $ p $ str "world")
+    (runAt (nodes !! 1) $ (local $ render $ rawHtml $ p $ str "hello") >> local (empty >> return ())) <|> (local $ render $ rawHtml $ p $ str "world")
+  localIO $ print r
 
 -- main3= keep $ runCloud' $ do
 --   runTestNodes [2000..2002]
@@ -135,7 +134,7 @@ doit= onBrowser $ do
   -- replicateData :: Cloud Connected
   authenticate
   verifyDir
-
+  
   let filenamew= boxCell "filename"
   port <- localIO getPort
   ide filenamew port <|> consoleControlFrames <|> folderNav filenamew :: Cloud () -- <* resizable
@@ -154,7 +153,7 @@ doit= onBrowser $ do
 
   folderNav filenamew=  do
     UserName u <- local getState
-    (file,source) <- folder  u u
+    (file,source) <- folderAndInvites  u u
     localIO $ setEditorContent $ pack source
     local $ filenamew .= file
 
@@ -258,13 +257,14 @@ authenticate = do
             error "should not run in browser"   :: TransIO (Maybe String)
 
 #endif
-
     case mr of
       Nothing ->   auth n
       Just r -> do
+        local $ alert "rendering0"
         setState $ UserName n
-
-        local $ render $ at  "#auth" Insert $ do
+        local $ alert "rendering1"
+        local $ render $ at "#auth" Insert $ do
+            liftIO $ alert "rendering"
             rawHtml $ clear >> span n
             (span  (str " change user") ! style "cursor:pointer")  `pass` OnClick
             return ()
@@ -360,8 +360,8 @@ consoleControlFrames= local $ do
 
   liftIO $ scrollBottom "frame"
 
-folder :: String -> String -> Cloud (String,String)
-folder user fol= onBrowser $ do
+folderAndInvites :: String -> String -> Cloud (String,String)
+folderAndInvites user fol= onBrowser $ do
   return ()!> "VA A PINTAR INVITES Y FOLDERS DE NUEVO"
   local $ render $ rawHtml $ div ! clas "resize" ! style "overflow:auto;position:absolute;left:85%;height:68%"
                  $ div ! id "dirs" $ do
