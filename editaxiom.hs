@@ -77,14 +77,16 @@ add compiler service as a compile.hs which uses the docker image
 
 main1= keep $ initNode $ onBrowser $ do
   node <- local getMyNode
+  local . render $ rawHtml $ div ! id "auth1" $ str "here" 
   atRemote $ local $ return $ str "hi"
   r <- atRemote $  do
     local $ GHC(updateConnectionInfo node "pepe") >> return ()
     
     nodes <- local getNodes
     (runAt (nodes !! 1) $ (local $ render $ rawHtml $ p $ str "hello") >> local ( return ())) <|> (local $ render $ rawHtml $ p $ str "world")
-    (runAt (nodes !! 1) $ (local $ render $ rawHtml $ p $ str "hello") >> local (empty >> return ())) <|> (local $ render $ rawHtml $ p $ str "world")
+    (runAt (nodes !! 1) $ (local $ render $ rawHtml $ p $ str "hello") >> local ( return ())) <|> (local $ render $ rawHtml $ p $ str "world")
   localIO $ print r
+  local $ render $ at "#auth1" Insert$ rawHtml $ clear >> p (str "hiiiiiiiiiiii")
 
 -- main3= keep $ runCloud' $ do
 --   runTestNodes [2000..2002]
@@ -264,7 +266,7 @@ authenticate = do
         setState $ UserName n
         local $ alert "rendering1"
         local $ render $ at "#auth" Insert $ do
-            liftIO $ alert "rendering"
+            --liftIO $ alert "rendering"
             rawHtml $ clear >> span n
             (span  (str " change user") ! style "cursor:pointer")  `pass` OnClick
             return ()
