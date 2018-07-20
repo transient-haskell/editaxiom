@@ -1,6 +1,6 @@
 #!/usr/bin/env execthirdlinedocker.sh
 
--- cd `dirname $1` && mkdir -p ./static && ghcjs  -i../transient/src -i../transient-universe/src  -i../axiom/src -DDEBUG `basename $1` -o static/out && ghc -DDEBUG -threaded  -i../develold/TCache -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` && ./`basename $1 .hs`  ${2} ${3}
+-- cd `dirname $1` && mkdir -p ./static && ghcjs  -i../transient/src -i../transient-universe/src  -i../axiom/src  `basename $1` -o static/out && ghc  -threaded  -i../develold/TCache -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` && ./`basename $1 .hs`  ${2} ${3}
 
 -- cd `dirname $1`&& runghc  -threaded  -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` 
 
@@ -155,14 +155,19 @@ doit= onBrowser $ do
 
   folderNav filenamew=  do
     UserName u <- local getState
-    (file,source) <- folderAndInvites  u u
+    local $ setRState (("",Nothing) :: (String,Maybe Owner))
+    (file,source,mowner) <- folderAndInvites  u u
     localIO $ setEditorContent $ pack source
     local $ filenamew .= file
+    (prevFile,prevmowner) <- local $ getRState 
+    local $ setRState (file,mowner)
+    sendGetDeltas False prevFile prevmowner
+    sendGetDeltas True file mowner
 
 newtype Name= Name String deriving (Read,Show,Typeable,Eq,Ord)
 newtype Pass= Pass String deriving (Read,Show,Typeable,Eq,Ord)
 newtype Email= Email String deriving (Read,Show,Typeable,Eq,Ord)
-
+newtype Owner= Owner String  deriving (Read,Show,Typeable,Eq,Ord)
 #ifndef ghcjs_HOST_OS
 
 data User= User{ userName:: Name, email :: Email, userPassword :: Pass, userConnected :: Maybe (DBRef Connected)}
@@ -172,7 +177,7 @@ newtype File= File String  deriving (Read,Show,Typeable,Eq,Ord)
 newtype ServerNode= ServerNode String deriving (Read,Show,Typeable)
 newtype WebNode= WebNode String deriving (Read,Show,Typeable)
 
-newtype Owner= Owner String  deriving (Read,Show,Typeable,Eq,Ord)
+
 newtype Invited= Invited String deriving (Read,Show,Typeable,Eq,Ord)
 
 data Shared= Shared{ sharedId       :: Int
@@ -262,11 +267,11 @@ authenticate = do
     case mr of
       Nothing ->   auth n
       Just r -> do
-        local $ alert "rendering0"
+
         setState $ UserName n
-        local $ alert "rendering1"
+
         local $ render $ at "#auth" Insert $ do
-            --liftIO $ alert "rendering"
+
             rawHtml $ clear >> span n
             (span  (str " change user") ! style "cursor:pointer")  `pass` OnClick
             return ()
@@ -362,7 +367,7 @@ consoleControlFrames= local $ do
 
   liftIO $ scrollBottom "frame"
 
-folderAndInvites :: String -> String -> Cloud (String,String)
+folderAndInvites :: String -> String -> Cloud (String,String, Maybe Owner)
 folderAndInvites user fol= onBrowser $ do
   return ()!> "VA A PINTAR INVITES Y FOLDERS DE NUEVO"
   local $ render $ rawHtml $ div ! clas "resize" ! style "overflow:auto;position:absolute;left:85%;height:68%"
@@ -398,19 +403,20 @@ folderAndInvites user fol= onBrowser $ do
                       GHC(return  $ map (\(n,Owner o,File doc) ->  (n, o, doc)) ns) :: IO [(Node,String,String)]
        foldr  (<|>) empty [elemShared n o f | (n, o, f) <- is]
 
-  folder' :: Node  -> String -> [String] -> Cloud (String,String)
+  folder' :: Node  -> String -> [String] -> Cloud (String,String, Maybe Owner)
   folder' n  dir files= do
       foldr  (<|>) empty [elemFolder  n dir f | f <- files]
 
+  elemShared :: Node -> String -> String -> Cloud (String,String, Maybe Owner)
   elemShared node owner file= do
-    return () !> "ELEMSHARED"
+
     return () !> (node, owner,file)
     local $ setRenderTag "invites"
 
     local $ render $ pre file ! style "cursor:pointer" `pass` OnClick >> return ()
-    local $ alert "elemShared"
 
-    (f,s) <- atServer $ runAt node $ loggedc $
+
+    (f,s,shared) <- atServer $ runAt node $ loggedc $
 
       do
         isFile <- localIO $ doesFileExist file
@@ -434,38 +440,21 @@ folderAndInvites user fol= onBrowser $ do
               if null wn
                 then localIO $ do
                     source <- readFile file  `catch` \(e:: SomeException) -> return "File is not a text"
-                    return (file, source)
+                    return (file, source, Just $ Owner owner)
                 else do
                     let (host,webnode)= head wn
                     source <- runAt host $ runAt webnode $ local  copyContent
 
-                    return (file,source)
+                    return (file,source,Just $ Owner owner)
 
           False -> do
               files <- localIO $ getDirectoryContents file >>= return . sort
               folder' node  file files
 
-    UserName currentUser <- local $ getState <|> error "user not set"
-    Cloud . single $ runCloud' $ sendGetDeltas True f currentUser
+ --   UserName currentUser <- local $ getState <|> error "user not set"
+ --   Cloud . single $ runCloud' $ sendGetDeltas True f currentUser
 
-    return (f,s)
-
-  sendGetDeltas False _ _ = return ()
-  sendGetDeltas True f currentUser = do
-      let hash= (f <> "@" <> currentUser)
-      getDeltas hash <|> sendDeltas  hash <|> return ()
-
-    where
-    getDeltas hash= do
-      Delta delta <- suscribe hash
-      localIO $ applyDeltas delta
-      empty
-
-
-    sendDeltas  hash= do 
-      del <- local $ getMailbox' ("out" :: JSString)
-      publish hash (del :: Delta)
-      empty
+    return (f,s,shared)
 
 
 
@@ -477,6 +466,8 @@ folderAndInvites user fol= onBrowser $ do
 
 
 
+
+  elemFolder :: Node -> String -> String -> Cloud (String,String, Maybe Owner)
   elemFolder  node dir file= do
     local $ render $ pre file ! style "cursor:pointer" `pass` OnClick >> return ()
 
@@ -492,25 +483,26 @@ folderAndInvites user fol= onBrowser $ do
               isFile <- doesFileExist  filedir !>  ("FILEDIR",filedir,file)
               case isFile of
                   True  -> Right <$> do  
-                        source <- do
-                              s <- readFile filedir
+                        (source, shared) <- do
+                              source <- readFile filedir
                               atomically $ do
                                   rs <- recordsWith $ 
                                                  connectedUser    .==. (getDBRef $ keyUserName username :: DBRef User) 
                                           .&&.   connectedHost    .==. node
                                         --  .&&.   connectedWebnode .==. wnd
                                   case rs of 
-                                    [] -> return()
+                                    []  -> return(source,Nothing)   -- que significa []?  debe ser un error
                                     [r] -> do
-                                      [id] <- select sharedId $  sharedDoc .==. File file .&&. sharedNode .==. node
+                                      [(id, owner)] <- select (sharedId,sharedOwner) $  sharedDoc .==. File file .&&. sharedNode .==. node
                                       withSTMResources [r] $ \[Just r] -> 
                                         resources{toAdd=[r{connectedEditingShared= 
                                             getDBRef (keyShared id) : connectedEditingShared r}]}
+                                      return (source,Just owner)
                                     _ -> error "more than one session in the same machine. need to specify the web node in the query"
-                              return s
-                          `catch` \(e:: SomeException) -> return "File is not a text"
+                             
+                          `catch` \(e:: SomeException) -> return ("File is not a text",Nothing)
                         
-                        return (filedir, source)
+                        return (filedir, source , shared)
 
                   False -> Left  <$> liftIO (getDirectoryContents filedir >>= return . sort)
 #else
@@ -520,11 +512,33 @@ folderAndInvites user fol= onBrowser $ do
 
     case r of
         Right fileinfo -> do
-          Cloud . single $ runCloud' $ sendGetDeltas False undefined undefined
-          local $ return fileinfo
 
-        Left files     -> folder' node  filedir files
+            local $ return fileinfo
 
+        Left files -> folder' node  filedir files
+
+sendGetDeltas False _ Nothing = return ()
+sendGetDeltas False file (Just (Owner user)) = do
+      let hash= (file <> "@" <> user)
+      unsuscribe hash
+sendGetDeltas True f (Just (Owner user)) = do
+      let hash= (f <> "@" <> user)
+      getDeltas hash <|> sendDeltas  hash <|> return ()
+
+    where
+    getDeltas hash= do
+      Delta delta <- suscribe hash
+      
+      localIO $ do
+         writeIORef rapply True
+         applyDeltas delta
+      empty
+
+
+    sendDeltas  hash= do 
+      del <- local $ getMailbox' ("out" :: JSString)
+      publish hash (del :: Delta)
+      empty
 
 getPort = do
   x <- atomicModifyIORef counter $ \n -> (n + 1, n + 1)
@@ -575,15 +589,20 @@ editsOfCode filenamew =  do
           empty
   
 newtype Delta= Delta JSString deriving (Read,Show, Typeable)
+rapply= unsafePerformIO $ newIORef False
+
 typingControl  filenamew= do
         UserName currentUser <- local getState
         (delta :: JSString, hdelta) <- local $ do
               ModifyEvent jsdelta <- react onmodify $ return ()
               hdelta <- liftIO $ deltaToTuple jsdelta
               delta <- liftIO $ stringify jsdelta
-
               return (delta,hdelta)
-        local $ putMailbox' ("out" ::JSString) $ Delta delta
+        
+        local $ do
+            flag <- liftIO $ atomicModifyIORef  rapply $ \f -> (False,f)
+            guard (not flag)
+            putMailbox' ("out" ::JSString) $ Delta delta
         --sendDeltas delta hash <|> 
         interpretDelta hdelta  filenamew currentUser
         empty
@@ -627,7 +646,7 @@ typingControl  filenamew= do
 
               --  else do
               isOnline <- atRemote $  do
-                    return () !> "ATREMOTEEEEEEEEEEE"
+
                     nodeFile <- local getMyNode
                     sharedId <- local genGlobalId
                     let newReg=  GHC((Shared
@@ -666,7 +685,9 @@ typingControl  filenamew= do
                   (True,True)  -> "-- invitation sent"
                   (True,False) -> "-- invitation sent, but user not online"
                   (False,False)-> "-- "<> pack user <> str ": user not found"
-
+                  
+              when (not shareFolder) $ sendGetDeltas True file . Just $ Owner currentUser
+              
             where
             notifyWebNodes node doc wnds owner= do
               return() !> ("NOTIFYWEBNODES",wnds,doc)
@@ -676,7 +697,9 @@ typingControl  filenamew= do
                 empty
              <|> return ()
 
+            insertInEditor :: JSString -> Cloud ()
             insertInEditor txt= atBrowser $ localIO $ insertText txt
+            
 
 
 
@@ -938,7 +961,7 @@ foreign import javascript safe "JSON.stringify($1)"  stringify :: JSVal -> IO JS
 
 foreign import javascript unsafe "document.getElementById($1).childNodes.length" numChildNodes :: JSString -> IO Int
 
-foreign import javascript unsafe "editor.getSession().applyDeltas([JSON.parse($1)])" applyDeltas :: JSString -> IO ()
+foreign import javascript unsafe "editor.getSession().getDocument().applyDeltas([JSON.parse($1)])" applyDeltas :: JSString -> IO ()
 
 
 #else
@@ -1061,11 +1084,37 @@ unsuscribe hash= do
        let ns = fromMaybe [] $ M.lookup h susc
        in M.insert h (ns \\[node]) susc
   
-publish hash dat= atServer $ do
+publish hash dat= do
+  node <- local getMyNode
+  atServer $ do
+
     nodes <- localIO $ readIORef suscribed >>= return . fromMaybe [] . M.lookup hash
-    foldr (<|>) empty  $ map pub nodes 
+    let nodes'= nodes \\ [Left node,Right node]
+    foldr (<|>) empty  $ map pub  nodes'  
     return()
 
     where 
     pub  (Left node)= runAt node $ publish hash dat >> empty >> return ()
     pub  (Right node)= runAt node $ local $ putMailbox' hash dat >> empty
+
+{-    
+setBaseClosure node= do
+    fixClosure
+    set clos for all the nodes
+    en vez de setClosure 0 cuando se cambia de nodo, poner esa.
+      tener en cuenta que en algunas ramas esa closure no es valida
+      
+    se puede hacer un fixclosure a posteriori?
+    
+    localFix mx= do
+       add to localclosures el log en ese punto 
+       como lo sabe el nodo enviante que ya esta dado de alta?
+          se necesita un flag para cada conexion, pero las closures se pueden reutilizar
+          no hace falta si se limpia en wormhole
+          tiene que ser una varable de estado que se limpia en wormhole   setRData $ ClosRemote 0
+          eso se hace ahora (no hay que hacer nada, solo cambiar setData por setRData)
+          hay que guardar el valor actual y recuperarlo despues de ejectar el remoto!
+            para permitir llamadas anidadas.
+       
+            
+-}  
