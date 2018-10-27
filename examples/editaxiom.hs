@@ -53,13 +53,7 @@ add compiler service as a compile.hs which uses the docker image
 -}
 
 
--- main= keep $ initNode $  onBrowser $ synchr $ do
---   -- local $ setSynchronous True >> return ()
---   line  <- local $  threads 0 $ choose[1..10::Int] 
---   localIO $ print ("1",line)
---   line2 <- atRemote $ synchr $ local $  choose [100..102 :: Int] --localIO $ print line -- >> empty :: Cloud String
---   localIO $ print ("2", line,line2) 
-  
+
 
 main = keep . initNode $  doit
   
