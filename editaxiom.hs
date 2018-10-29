@@ -554,7 +554,9 @@ newtype Live= Live Bool deriving (Typeable,Read,Show)
 
 instance Monoid Bool where
   mempty = False
-  mappend= (||)
+
+instance Semigroup Bool where
+  (<>)= (||)
 
 editsOfCode :: Cell String -> Cloud (String, String)
 editsOfCode filenamew =  do
@@ -618,7 +620,7 @@ typingControl  filenamew= do
           l <- localIO getCurrentLine
           local $ do
               setParseString $ BS.pack $ unpack l
-              dropUntilToken  "-- "
+              tDropUntilToken  "-- "
               string "invite"
           do
               local $ string "folder"
