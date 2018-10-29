@@ -1,9 +1,8 @@
 #!/usr/bin/env execthirdlinedocker.sh
 
--- cd `dirname $1` && mkdir -p ./static && ghcjs  -i../transient/src -i../transient-universe/src  -i../axiom/src  `basename $1` -o static/out && ghc  -threaded  -i../develold/TCache -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` && ./`basename $1 .hs`  ${2} ${3}
+-- cd `dirname $1` && mkdir -p ./static && ghcjs -DDEBUG  -i../transient/src -i../transient-universe/src  -i../axiom/src  `basename $1` -o static/out && ghc -DDEBUG -threaded  -i../develold/TCache -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` && ./`basename $1 .hs`  ${2} ${3}
 
--- cd `dirname $1`&& runghc  -threaded  -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` 
-
+-- cd `dirname $1`&& runghc -DDEBUG  -threaded  -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` 
 
 {-# LANGUAGE CPP, FlexibleContexts,OverloadedStrings, FlexibleInstances, UndecidableInstances, ScopedTypeVariables, DeriveDataTypeable #-}
 import qualified Data.Map as M
@@ -12,6 +11,7 @@ import Control.Exception(SomeException, catch)
 import Control.Monad
 import Control.Monad.State hiding (get)
 import Data.IORef
+
 import Data.Monoid
 import GHCJS.HPlay.View hiding (input, option, select)
 import GHCJS.HPlay.Cell
@@ -26,6 +26,7 @@ import Transient.Parse
 import qualified Data.ByteString.Lazy.Char8 as BS
 import Data.List hiding(span, replicate)
 import Data.Typeable
+import Transient.Move.Services
 
 #ifdef ghcjs_HOST_OS
 import GHCJS.Marshal (fromJSValUnchecked)
@@ -73,39 +74,15 @@ add compiler service as a compile.hs which uses the docker image
 #define GHC(exp) exp
 #endif
 
-
-
-main1= keep $ initNode $ onBrowser $ do
-  node <- local getMyNode
-  local . render $ rawHtml $ div ! id "auth1" $ str "here" 
-  atRemote $ local $ return $ str "hi"
-  r <- atRemote $  do
-    local $ GHC(updateConnectionInfo node "pepe") >> return ()
-    
-    nodes <- local getNodes
-    (runAt (nodes !! 1) $ (local $ render $ rawHtml $ p $ str "hello") >> local ( return ())) <|> (local $ render $ rawHtml $ p $ str "world")
-    (runAt (nodes !! 1) $ (local $ render $ rawHtml $ p $ str "hello") >> local ( return ())) <|> (local $ render $ rawHtml $ p $ str "world")
-  localIO $ print r
-  local $ render $ at "#auth1" Insert$ rawHtml $ clear >> p (str "hiiiiiiiiiiii")
-
--- main3= keep $ runCloud' $ do
---   runTestNodes [2000..2002]
---   local $ option  (str "f") "fire"
---   nodes <- local getNodes
---   (runAt (nodes !! 0) $ local  empty) <|> showNode
---   where
---   showNode= do
---     n <- local getMyNode
---     localIO $ print n
-
-
+   
+ 
 main = do
 #ifndef ghcjs_HOST_OS
   GHC(databaseIndices)
 #endif
-  keep $  initNode doit  -- GHC(<|> signals) 
-
-
+  keep $  runService [] 8000 [] $ inputNodes <|> doit  -- GHC(<|> signals) 
+  
+  
 #ifndef ghcjs_HOST_OS
 
 -- signals= do
@@ -170,7 +147,8 @@ newtype Email= Email String deriving (Read,Show,Typeable,Eq,Ord)
 newtype Owner= Owner String  deriving (Read,Show,Typeable,Eq,Ord)
 #ifndef ghcjs_HOST_OS
 
-data User= User{ userName:: Name, email :: Email, userPassword :: Pass, userConnected :: Maybe (DBRef Connected)}
+data User= User{ userName:: Name, email :: Email, userPassword :: Pass
+               , userConnected :: Maybe (DBRef Connected)}
             deriving (Read,Show, Typeable)
 
 newtype File= File String  deriving (Read,Show,Typeable,Eq,Ord)
@@ -244,7 +222,7 @@ authenticate = do
                   if p== p'
                     then do
                       (on,wnode) <-  updateConnectionInfo webnode n 
-                      ex <- getSData <|> error "No disconnection bacpoint"
+                      ex <- getSData <|> error "No disconnection backpoint"
                       onExceptionPoint ex $ \(e :: SomeException)  -> removeConnectionInfo n on wnode
                 
                       liftIO $ atomically $ newDBRef (User (Name n) (Email n) (Pass p)  $ Just on)
@@ -254,7 +232,7 @@ authenticate = do
                   --port <- liftIO getPort
                   if Pass p == pstored then do
                        (on,wnode) <- updateConnectionInfo webnode n 
-                       ex <- getSData <|> error "No disconnection bacpoint"
+                       ex <- getSData <|> error "No disconnection backpoint"
                        onExceptionPoint ex $ \(e :: SomeException)  -> removeConnectionInfo n on wnode
                        liftIO $ atomically $ do
                           writeDBRef ruser $ user{userConnected= Just on}  
@@ -451,8 +429,7 @@ folderAndInvites user fol= onBrowser $ do
               files <- localIO $ getDirectoryContents file >>= return . sort
               folder' node  file files
 
- --   UserName currentUser <- local $ getState <|> error "user not set"
- --   Cloud . single $ runCloud' $ sendGetDeltas True f currentUser
+ 
 
     return (f,s,shared)
 
@@ -528,7 +505,7 @@ sendGetDeltas True f (Just (Owner user)) = do
     where
     getDeltas hash= do
       Delta delta <- suscribe hash
-      
+
       localIO $ do
          writeIORef rapply True
          applyDeltas delta
@@ -537,6 +514,7 @@ sendGetDeltas True f (Just (Owner user)) = do
 
     sendDeltas  hash= do 
       del <- local $ getMailbox' ("out" :: JSString)
+
       publish hash (del :: Delta)
       empty
 
@@ -667,11 +645,14 @@ typingControl  filenamew= do
                                    return(users :: [Name], webconnections :: [Node])
                             return () !> ("BROWSER NODEBROWSER NODESSSSSSSSSSSSSSSSSSSSSSSSS",us,wnds)
                             notifyWebNodes nodeFile fil wnds currentUser
+
                             return () !> "AFTER NOTIFY"
                             return (not $ null us :: Bool , not $ null wnds :: Bool)
 
                     -- if invitation sucessful add this to the list of invitation of this user
                     when us $ localIO $ atomically $ do
+
+
                       GHC(Just ureg <- readDBRef $ getDBRef $ keyUserName currentUser)
                       GHC(let coninfo= fromJust $ userConnected ureg)
 
@@ -680,7 +661,7 @@ typingControl  filenamew= do
                       -- add document to the list of shared documents  owned by this user that are being edited by him
                       GHC(writeDBRef coninfo $ conreg{connectedEditingShared=getDBRef (key newReg):connectedEditingShared conreg})
                       return()
-
+                    
                     return (us,wnds)
 
               insertInEditor $ case  isOnline of
@@ -1012,8 +993,8 @@ replicateData  = do
   exploreNet $  localIO $ atomically $ do
     let ref= getDBRef key
     case ma of 
-     Nothing -> delDBRef ref
-     Just ma -> writeDBRef ref ma
+       Nothing -> delDBRef ref
+       Just ma -> writeDBRef ref ma
   return $ fromJust ma
   where
   callCont cont= addTrigger $ \ref ma ->  safeIOToSTM $ cont (keyObjDBRef ref,ma)
@@ -1023,25 +1004,28 @@ replicateData  = do
 
 
 exploreNet :: (Loggable a,Monoid a) => Cloud a  -> Cloud a
-exploreNet action = loggedc $ do
-   return () !> "EXPLORENET"
-   r <-  action
-  --  n <- localIO randomIO
-   nodes' <- local getEqualNodes
-   -- call the rest of the nodes connected
-   r' <- callNodes' (tail nodes')  (<>) mempty $ do
-    -- ns<- readIORef requestHistory
-    --if n `elem` ns then return Nothing else do
-      -- t  <- getCPUTime 
-      -- HT.insert requestHistory n time
-      nodes <- local getEqualNodes
-      callNodes' (nodes \\ nodes')  (<>) mempty $ exploreNet action 
-   return $ r <> r'
+exploreNet action = exploreNetExclude []  
+    where
+    exploreNetExclude nodesexclude = loggedc $ do
+       local $ return () !> "EXPLORENETTTTTTTTTTTT"
+       action <> otherNodes
+       where
+       otherNodes= do
+             node <- local getMyNode
+
+             nodes <- local $ getNodes' 
+             return () !> ("NODES",nodes)
+             callNodes' (tail nodes \\ (node:nodesexclude)) (<>) mempty $
+                          exploreNetExclude (union (node:nodesexclude) nodes) 
+                          
+       getNodes'= if isBrowserInstance then getNodes 
+                     else union <$>  getEqualNodes <*> getWebNodes
+
 
 -- deletekeys interval= do 
 --    time <- waitEvents $ do
 --               threadWait $ interval * 1000000
---               t  <- getCPUTime 
+--               t  <- getCPUTime  
 --               return t
 --    liftIO $ do
 --      vs <- fromList requestHistory
@@ -1053,21 +1037,38 @@ exploreNet action = loggedc $ do
 
 suscribed= unsafePerformIO $ newIORef (M.empty :: M.Map String [Either Node Node])
 
-suscribe :: Loggable a => String -> Cloud a
+suscribe :: (Loggable a) => String -> Cloud a
 suscribe hash= do
   node <- local getMyNode
-  local (getMailbox' hash) <|> (atServer $ susc (Right node))
-    where
-    susc node = do 
-          localIO $ atomicModifyIORef suscribed $ \ss -> (insert hash node ss,())
-          nodes <- local getEqualNodes
-          callNodes' (tail nodes)  (<|>) empty  $ susc $ Left (head nodes)
-          empty
-      
-          
-    insert h node susc=
+  local (getMailbox' hash) <|> atServer (do
+       localIO $ atomicModifyIORef suscribed $ \ss -> (insert hash [Right node] ss,())
+       susc node)
+  where
+  susc node=do
+      exploreNet $ local $ do
+             nodes <-  getNodes
+             let nodes'= if node == head nodes then tail nodes else nodes
+             return () !> ("insert", nodes')
+             liftIO $ atomicModifyIORef suscribed $ \ss -> (insert hash (map Left nodes') ss,())
+
+             empty
+             return()
+      empty
+
+  insert h node susc=
        let ns = fromMaybe [] $ M.lookup h susc
-       in M.insert h (node:ns) susc
+       in M.insert h (union node ns) susc
+       
+--  local (getMailbox' hash) <|> (atServer $ susc (Right node))
+--    where
+--    susc node = do 
+--          localIO $ atomicModifyIORef suscribed $ \ss -> (insert hash node ss,())
+--          nodes <- local getEqualNodes
+--          callNodes' (tail nodes)  (<|>) empty  $ susc $ Left (head nodes)
+--          empty
+    
+          
+
 
       
 unsuscribe hash= do
@@ -1080,43 +1081,79 @@ unsuscribe hash= do
           nodes <- local getEqualNodes
           callNodes' (tail nodes)  (<|>) empty $ unsusc $ Left (head nodes)
           empty
-          
-          
+
+
     delete h node susc=
        let ns = fromMaybe [] $ M.lookup h susc
        in M.insert h (ns \\[node]) susc
   
-publish hash dat= do
-  node <- local getMyNode
-  atServer $ do
+publish :: Loggable a => String -> a -> Cloud ()
+publish hash dat= publishExclude [] hash dat
 
+publishExclude :: Loggable a=> [Either Node Node] -> String -> a -> Cloud ()
+publishExclude excnodes hash dat= atServer $ do
     nodes <- localIO $ readIORef suscribed >>= return . fromMaybe [] . M.lookup hash
-    let nodes'= nodes \\ [Left node,Right node]
-    foldr (<|>) empty  $ map pub  nodes'  
+    let unodes= union nodes excnodes
+    return() !> (nodes,excnodes)
+    foldr (<|>) empty $ map (pub unodes) (nodes \\ excnodes)
+    empty
     return()
 
     where 
-    pub  (Left node)= runAt node $ publish hash dat >> empty >> return ()
-    pub  (Right node)= runAt node $ local $ putMailbox' hash dat >> empty
+    pub  unodes (Left node) = runAt node $ publishExclude unodes hash dat >> empty >> return ()
+    pub  _      (Right node)= runAt node $ local $ do
+                   putMailbox' hash dat 
+                   return () !> "PUTMAILBOX"
+                   empty
 
-{-    
-setBaseClosure node= do
-    fixClosure
-    set clos for all the nodes
-    en vez de setClosure 0 cuando se cambia de nodo, poner esa.
-      tener en cuenta que en algunas ramas esa closure no es valida
-      
-    se puede hacer un fixclosure a posteriori?
+#ifdef ghcjs_HOST_OS
+optionn x y = render $ wbutton  x y
+#else
+optionn x y= option x y
+#endif
+
+main1 = keep $ initNode $  inputNodes <|> do
+    localIO $ threadDelay $ 1000000
+    addWebNode
+
+{-
+    local $ optionn ("f" :: String) "fire"
+    r <- exploreNet $ local  $ return <$> getMyNode :: Cloud [Node]
+    localIO $ print r 
+    empty
     
-    localFix mx= do
-       add to localclosures el log en ese punto 
-       como lo sabe el nodo enviante que ya esta dado de alta?
-          se necesita un flag para cada conexion, pero las closures se pueden reutilizar
-          no hace falta si se limpia en wormhole
-          tiene que ser una varable de estado que se limpia en wormhole   setRData $ ClosRemote 0
-          eso se hace ahora (no hay que hacer nada, solo cambiar setData por setRData)
-          hay que guardar el valor actual y recuperarlo despues de ejectar el remoto!
-            para permitir llamadas anidadas.
-       
-            
--}  
+    
+    
+
+    wnode <- local getMyNode
+    atRemote $  local $ GHC(updateConnectionInfo wnode "") >> return ()
+    local  $ option ("i" :: String) "init"
+    r <- suscribe "hello" <|> do
+              local  $ option ("f" :: String) "fire"
+
+              publish ("hello" ::String) ("world" :: String)  
+
+              empty
+
+    local$ alert (r :: String)
+   -}
+   
+   
+-- | add the web node to the server so that the server can recognize it and call back the web node asynchronously.
+addWebNode= doit <|> return()
+ where
+ doit= onBrowser $ do
+   wnode <- local getMyNode
+   atRemote $ local $ do
+       GHC(updateConnectionInfo wnode "")
+       ex <- getSData <|>  error "NO BACKPOINT"
+       onExceptionPoint ex $ \(e :: SomeException)  -> do
+                                liftIO $ print ("REMOVING NODE", wnode)
+                                delNodes [wnode]
+       empty
+       return()  
+
+{-
+ addWSocketNode 
+ 
+-}
