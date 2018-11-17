@@ -1,8 +1,11 @@
 #!/usr/bin/env execthirdlinedocker.sh
 
+-- cd `dirname $1` && mkdir -p ./static && ghcjs -DDEBUG `basename $1`  -o static/out && ghc -DDEBUG -threaded  `basename $1` && ./`basename $1 .hs`  ${2} ${3}
+
 -- cd `dirname $1` && mkdir -p ./static && ghcjs -DDEBUG  -i../transient/src -i../transient-universe/src  -i../axiom/src  `basename $1` -o static/out && ghc -DDEBUG -threaded  -i../develold/TCache -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` && ./`basename $1 .hs`  ${2} ${3}
 
--- cd `dirname $1`&& runghc -DDEBUG  -threaded  -i../transient/src -i../transient-universe/src -i../axiom/src  `basename $1` 
+
+
 
 {-# LANGUAGE CPP, FlexibleContexts,OverloadedStrings, FlexibleInstances, UndecidableInstances, ScopedTypeVariables, DeriveDataTypeable #-}
 import qualified Data.Map as M
@@ -80,7 +83,7 @@ main = do
 #ifndef ghcjs_HOST_OS
   GHC(databaseIndices)
 #endif
-  keep $  runService [] 8000 [] $ inputNodes <|> doit  -- GHC(<|> signals) 
+  keep $  initNode $ inputNodes <|> doit  -- GHC(<|> signals) 
   
   
 #ifndef ghcjs_HOST_OS
@@ -528,14 +531,17 @@ str s= s :: JSString
 
 
 
-newtype Live= Live Bool deriving (Typeable,Read,Show)
+newtype Live= Live Bool  deriving (Typeable,Read,Show)
+
 
 instance Monoid Bool where
   mempty = False
+  mappend= (||)
 
+{-
 instance Semigroup Bool where
   (<>)= (||)
-
+-}
 editsOfCode :: Cell String -> Cloud (String, String)
 editsOfCode filenamew =  do
       fileNameWidget  **> saveCompile  <|> changeContent 
@@ -835,7 +841,9 @@ parseResp err2  = do
     (return $ "[{'row': '2','column':'0','text':'" <> mapchars err2 <> "','type':'error'}]")
 
   where
-  parseErrors = try(manyTill multilineError isDonep) <|> (isDone >>= \c -> if c !> ("d",c) then empty else anyChar >> parseErrors !> "parseerrors")
+  parseErrors = try(manyTill multilineError isDonep)  <|> 
+                   (isDone >>= \c -> if c !> ("d",c) then empty else anyChar >> parseErrors !> "parseerrors")
+  
   isDonep= isDone >>= \c -> if c  then return ' ' else empty
 
   toJSON ers= "[" <> (concat $ map oneerr ers) <> "{}]"
@@ -851,9 +859,9 @@ parseResp err2  = do
   multilineError= do
     file <- tTakeWhile' (/= ':')  !>  "multilineError"
     line <- int
-    anyChar
+
     col  <- int
-    anyChar
+
     typ <- (try $ string "\n" >> return "error") <|>
            (try $ string " Warning:\n" >> return "warning") <|>
            return "error"
