@@ -1,6 +1,6 @@
 #!/usr/bin/env execthirdlinedocker.sh
 
--- mkdir -p ./static && ghcjs ${1} -o static/out && echo ${1} && runghc ${1}  ${2} ${3}
+-- mkdir -p ./static && ghcjs -DDEBUG ${1} -o static/out && echo ${1} && runghc -DDEBUG ${1}  ${2} ${3}
 {-# LANGUAGE OverloadedStrings,  CPP #-}
 
 module Main where
@@ -12,21 +12,23 @@ import GHCJS.HPlay.View
    hiding (map, option,runCloud')
 #endif
 
+import Prelude hiding (div)
 import Transient.Base
-import  Transient.Move
+import Transient.Move
+import Transient.Indeterminism
 import Transient.Move.Utils
 import Control.Applicative
 import Control.Monad
 import Data.Typeable
 import Data.IORef
 import Control.Concurrent (threadDelay)
-import Control.Monad.IO.Class
+import Control.Monad.State
 import Control.Concurrent.MVar
 import System.Random
 import System.IO.Unsafe
 import Data.String
 
-data Operation= Operation String
+newtype Operation= Operation String deriving (Read,Show, Typeable)
 
 -- Follows  http://www.math-cs.gordon.edu/courses/cs211/ATMExample/
 -- to demostrate how it is possible to program at the user requiremente level
@@ -39,81 +41,93 @@ main= keep $ initNode $ atm
 
 atm= do
    card <- waitCard
-   pin <- enterPIN
-   validateBank pin card
+   --validateBank  card
    setData card
    performTransactions <|> cancel
-   returnCard
+   
 
 performTransactions = do
-    clearScreen
-    operation <- withdrawal <|> deposit <|> transfer <|> balanceInquiry
+    --clearScreen
+    operation <- withdrawal  <|> deposit <|> transfer <|> balanceInquiry
     printReceipt operation
-    return ()
+    empty
 
 withdrawal= do
-    local . render $ wlink ()  $ toElem "withdrawall"
-    local . render $ wprint "choose bank account"
-    account <- chooseAccount
-    wprint "Enter the quantity"
-    quantity <- getInt Nothing
+    local . render $ wlink ()  $ toElem $ jstr "withdrawall"
+    local $ jprint "choose bank account"
+    account <- local chooseAccount
+    local $ jprint "Enter the quantity"
+    quantity <- local . render $ getInt Nothing
     if quantity `rem` 20 /= 0
       then do
-        wprint "multiples of $20.00 please"
-        stop
+        local $ jprint "multiples of $20.00 please"
+        empty
       else do
         r <- approbalBank account quantity
         case r of
-            False -> do
-                wprint "operation denied. sorry"
-                wprint "Another transaction?"
-                r <- wlink True (b "yes ") <|> wlink False << (b "No")
-                if not r then return ()
-                                 else performTransactions
-            True  ->  giveMoney r
+            False ->  do
+                local $ do 
+                   jprint "operation denied. sorry"
+                   jprint "Try another transaction"
+                   empty
+--                r <- local $ render $ wlink True (b "yes ") <|> wlink False  (b "No")
+--                if not r then return ()
+--                                 else performTransactions
+            True  ->do  
+                      giveMoney r
+                      return $ Operation $ "withdrawal " ++ show quantity
 
-deposit= do
-    wlink () $ b "Deposit "
-    wprint "choose bank account"
+deposit= local $ do
+    render $ wlink () $ b $jstr "Deposit "
+    jprint "choose bank account"
     account <- chooseAccount
     r <- approbalBankDeposit account
     case r of
-        False -> do wprint "operation denied. sorry"
-                    stop
+        False -> do jprint "operation denied. sorry"
+                    empty
         True  -> do
-            r <- waitDeposit <|> timeout
+            let timeout t = collect' 1 t
+            r <- timeout 10000000 waitDeposit 
             case r of
-                False -> do wprint "timeout, sorry"; stop
-                True  -> return ()
+                [] -> do jprint "timeout, sorry"; empty
+                _  -> return $ Operation "deposit"
 
-transfer= do
-    wlink () $ b "Transfer "
-    wprint "From"
+transfer= local $ do
+    render $ wlink () $ b $ jstr "Transfer "
+    jprint "From"
     ac <- chooseAccount
-    wprint "amount"
-    amount <- inputDouble Nothing
-    wprint "To"
+    jprint "amount"
+    amount <- render $ inputDouble Nothing
+    jprint "To"
     ac' <- chooseAccount
     transferAccBank ac ac' amount
-    return()
+    return $ Operation $ "transfer from "++ show ac ++ " to " ++ show ac'
 
-balanceInquiry= do
-    wprint "From"
+balanceInquiry= local $ do
+    render $ wlink () $ b $ jstr "Balance inquiry "
+
+    jprint "From"
     ac <- chooseAccount
     r <- getBalanceBank ac
-    wprint $ "balance= "++ show r
+    sprint $ "balance= "++ show r
+    return $ Operation $ "balanceInquiry: "++ show r
 
-validateBank pin card = atRemote $ validate' pin card (0 :: Int)
+validateBank :: Card -> Cloud ()
+validateBank  card = validate'  card 0
    where
-   validate' pin card times= local $ do
-    r <- verifyPinBank pin card
-    if r then return () else do
-     if times ==2
-      then do
-        wprint ("three tries. card will be retained" :: String)
-        stop
+   validate'  card times=  do
+    pin <- enterPIN
+    localIO $ print "ENTERED PIN"
+    atServer $ do
+        localIO $ print "AT SERVEr"
+        r <- verifyPinBank pin card
+        if r  then return () 
+        else if times == 2 then do
+                local $ jprint "three tries. card will be retained"
+                empty
 
-      else validate' pin card $ times + 1
+        else validate'  card $ times + 1
+
 
 rtotal= unsafePerformIO $ newEmptyMVar
 ractive= unsafePerformIO $ newMVar False
@@ -121,64 +135,85 @@ ractive= unsafePerformIO $ newMVar False
 switchOnOff= on <|> off
   where
   on= do
-     wbutton () "On"
-     wprint "enter total amount of money"
-     total <- getInt Nothing
+     render $ wbutton () "On"
+     jprint "enter total amount of money"
+     total <- render $ getInt Nothing
      liftIO $ do
        tryTakeMVar rtotal
        putMVar rtotal total
   off= do
-     wbutton () "Off"
+     render $ wbutton () "Off"
      active <- liftIO $ readMVar ractive
-     if active then stop else wprint "ATM stopped"
+     if active then empty else jprint "ATM stopped"
 
-type AccountNumber= String
+type AccountNumber= Int
 newtype Card= Card [AccountNumber]  deriving Typeable
 
-waitCard = local $ render $ wbutton Card "enter card"
+waitCard = do
+   local $ render $ wbutton () "enter card" ! atr "class" "button"
+ --  atServer . local $ do
+ --     option1 "enter"  "simulate enter card"
+   return $ Card [1111]
 
 enterPIN= local $ do
-      wprint "Enter PIN"
-      render $ getInt Nothing `fire` OnChange
+      jprint "Enter PIN"
 
-cancel= wbutton () "Cancel"
+      render $ getInt Nothing `fire` OnChange  <**  inputSubmit  ("enter" :: JSString) -- `fire` OnClick
 
-returnCard= wprint "Card returned"
+cancel=  do
+  local . render $ wbutton () "Cancel"
+  returnCard
 
-clearScreen=  wraw $ forElems "body" $ this >> clear
+returnCard=  do
+  clearScreen
+  local $ jprint "Card returned"
 
+clearScreen=  local  $ do
+   delData $ Alternative undefined
+   render . wraw $ forElems "body" $ this  >> clear `child` (div ! atr "id" "body1" $ noHtml)
+   setRenderTag "body1"
 
-printReceipt (Operation str)= do
-    wprint $ "receipt: Operation:"++ str
+printReceipt (Operation str)= local . sprint $ "receipt: Operation:"++ str
 
+chooseAccount :: TransIO AccountNumber
 chooseAccount= do
     Card accounts <- getSData <|> error "transfer: no card"
-    wprint "choose an account"
-    mconcat[wlink ac (fromString $ ' ':show ac) | ac <- accounts]
+    jprint "choose an account"
+    render $ foldr (<|>) empty [wlink ac (fromString $ ' ':show ac) | ac <- accounts]
 
-approbalBank ac quantity= return True
+approbalBank ac quantity= atServer $ return True
 
-giveMoney n= wprint $ "Your money : " ++ show n ++ " Thanks"
+giveMoney n= local $ sprint $ "Your money : " ++ show n ++ " Thanks"
 
 approbalBankDeposit ac= return True
 
-transferAccBank ac ac' amount= wprint $ "transfer from "++show ac ++ " to "++show ac ++ " done"
+transferAccBank ac ac' amount= sprint $ "transfer from "++show ac ++ " to "++show ac ++ " done"
 
 getBalanceBank ac= liftIO $ do
     r <- rand
     return $ r * 1000
 
-verifyPinBank _ _= liftIO $ do
-    liftIO $ print "verifyPinBank"
+verifyPinBank pin _= localIO $ do
+    putStr "verifyPinBank "
+    print pin
     r <- rand
-    if r > 0.2 then return True else return False
+    if r > 0.2 then do liftIO $ print "valid" ; return True 
+               else do liftIO $ print "invald"; return False
 
-waitDeposit = do
+waitDeposit =  do
      n <- liftIO rand
-     if n > 0.5 then return True else return False
+     if n > 0.5 then return () else empty
 
 rand:: IO Double
-rand= randomRIO
+rand= randomRIO(0,1)
 
-timeout t= threadDelay $ t * 1000000
 
+
+jprint :: JSString -> TransIO()
+jprint = render . wprint
+
+sprint :: String -> TransIO()
+sprint = render . wprint
+
+jstr :: JSString -> JSString
+jstr= Prelude.id
