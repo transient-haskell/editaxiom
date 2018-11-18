@@ -1,6 +1,23 @@
 #!/usr/bin/env execthirdlinedocker.sh
 
 -- mkdir -p ./static && ghcjs -DDEBUG ${1} -o static/out && echo ${1} && runghc -DDEBUG ${1}  ${2} ${3}
+
+{-
+Programmed following the requirements of a canonical Java project: 
+
+http://www.math-cs.gordon.edu/courses/cs211/ATMExample/
+
+It demonstates that it is possible to program clearly at the level of the requirements so that the author of the requirements
+and even the business client can understand the program. This is possible thanks to funcional programming, specially to the
+power of continuations and other features like pure state, early termination and asynchronicity, which are included out of the box
+in the Transient libraries  (https://github.com/transient-haskell).
+
+The program includes the server and the client program.
+
+This is in a sharp contrast with OOP programming, which perform a complete deconstructio and transformation of the requirements 
+in a set of components and add a lot of accidental complexity.
+-}
+
 {-# LANGUAGE OverloadedStrings,  CPP #-}
 
 module Main where
@@ -28,36 +45,50 @@ import System.Random
 import System.IO.Unsafe
 import Data.String
 
+
 newtype Operation= Operation String deriving (Read,Show, Typeable)
 
--- Follows  http://www.math-cs.gordon.edu/courses/cs211/ATMExample/
--- to demostrate how it is possible to program at the user requiremente level
--- the program follows closely the specifications and be clear enough to be understood
--- by the client
 
-main= keep $ initNode $ atm
+main= keep $ initNode atm
 
-
+data Option= Withdrawal | Deposit | Transfer | BalanceInquiry | Cancel deriving (Show, Read, Typeable)
 
 atm= do
    card <- waitCard
-   --validateBank  card
+   validateBank  card
    setData card
-   performTransactions <|> cancel
+   performTransactions 
    
 
 performTransactions = do
-    --clearScreen
-    operation <- withdrawal  <|> deposit <|> transfer <|> balanceInquiry
+    clearScreen
+    option <- mainMenu
+    operation <- case option of
+                   Withdrawal      -> withdrawal
+                   Deposit         -> deposit
+                   Transfer        -> transfer
+                   BalanceInquiry  -> balanceInquiry
+                   Cancel          -> cancel
+       
     printReceipt operation
-    empty
+    
+
+mainMenu= do
+    local . render $ wbutton Withdrawal     ("Withdrawall ")     <|>
+                     wbutton Deposit        ("Deposit ")         <|>
+                     wbutton Transfer       ("Transfer ")        <|>
+                     wbutton BalanceInquiry ("Balance inquiry ") <|>
+                     wbutton Cancel         ("Cancel ")
+
+
+
+
 
 withdrawal= do
-    local . render $ wlink ()  $ toElem $ jstr "withdrawall"
-    local $ jprint "choose bank account"
-    account <- local chooseAccount
+
+    account <- chooseAccount
     local $ jprint "Enter the quantity"
-    quantity <- local . render $ getInt Nothing
+    quantity <- local . render $ getInt Nothing `fire` OnChange <** inputSubmit (jstr "send")
     if quantity `rem` 20 /= 0
       then do
         local $ jprint "multiples of $20.00 please"
@@ -77,39 +108,38 @@ withdrawal= do
                       giveMoney r
                       return $ Operation $ "withdrawal " ++ show quantity
 
-deposit= local $ do
-    render $ wlink () $ b $jstr "Deposit "
-    jprint "choose bank account"
+deposit=  do
+    local $ jprint "choose bank account"
     account <- chooseAccount
     r <- approbalBankDeposit account
     case r of
-        False -> do jprint "operation denied. sorry"
+        False -> do local $ jprint "operation denied. sorry"
                     empty
         True  -> do
             let timeout t = collect' 1 t
-            r <- timeout 10000000 waitDeposit 
+            r <- atServer $ local $ timeout 10000000 waitDeposit 
             case r of
-                [] -> do jprint "timeout, sorry"; empty
-                _  -> return $ Operation "deposit"
+                [] -> do local $ jprint "timeout, sorry"; empty
+                _  -> do
+                    local $ jprint "deposit done"
+                    return $ Operation "deposit"
 
-transfer= local $ do
-    render $ wlink () $ b $ jstr "Transfer "
-    jprint "From"
+transfer=  do
+    local $ jprint "From"
     ac <- chooseAccount
-    jprint "amount"
-    amount <- render $ inputDouble Nothing
-    jprint "To"
+    local $ jprint "amount"
+    amount <- local . render $ inputDouble Nothing `fire` OnChange <** inputSubmit  (jstr "send")
+    local $ jprint "To"
     ac' <- chooseAccount
     transferAccBank ac ac' amount
     return $ Operation $ "transfer from "++ show ac ++ " to " ++ show ac'
 
-balanceInquiry= local $ do
-    render $ wlink () $ b $ jstr "Balance inquiry "
+balanceInquiry=  do
 
-    jprint "From"
+    local $ jprint "From"
     ac <- chooseAccount
     r <- getBalanceBank ac
-    sprint $ "balance= "++ show r
+    local $ sprint $ "balance= "++ show r
     return $ Operation $ "balanceInquiry: "++ show r
 
 validateBank :: Card -> Cloud ()
@@ -160,36 +190,40 @@ enterPIN= local $ do
 
       render $ getInt Nothing `fire` OnChange  <**  inputSubmit  ("enter" :: JSString) -- `fire` OnClick
 
-cancel=  do
-  local . render $ wbutton () "Cancel"
-  returnCard
+cancel=    returnCard 
 
 returnCard=  do
   clearScreen
   local $ jprint "Card returned"
+  empty
 
-clearScreen=  local  $ do
-   delData $ Alternative undefined
-   render . wraw $ forElems "body" $ this  >> clear `child` (div ! atr "id" "body1" $ noHtml)
-   setRenderTag "body1"
+
 
 printReceipt (Operation str)= local . sprint $ "receipt: Operation:"++ str
 
-chooseAccount :: TransIO AccountNumber
-chooseAccount= do
+chooseAccount :: Cloud AccountNumber
+chooseAccount=  local $ do
     Card accounts <- getSData <|> error "transfer: no card"
     jprint "choose an account"
     render $ foldr (<|>) empty [wlink ac (fromString $ ' ':show ac) | ac <- accounts]
 
-approbalBank ac quantity= atServer $ return True
+approbalBank ac quantity= atServer $ do
+    -- r <- async . simpleHTTP $ getRequest "http://bank" -- simulation of request
+    localIO $ print "Approbed by the bank"
+    return True
 
-giveMoney n= local $ sprint $ "Your money : " ++ show n ++ " Thanks"
+giveMoney n= local $ sprint $ "Your money, Thanks"
 
-approbalBankDeposit ac= return True
+approbalBankDeposit ac = atServer $ do
+    -- r <- async . simpleHTTP $ getRequest "http://bank" -- simulation of request
+    localIO $ print "deposit pprobed by the bank"
+    return True
 
-transferAccBank ac ac' amount= sprint $ "transfer from "++show ac ++ " to "++show ac ++ " done"
+transferAccBank ac ac' amount= do
+   atServer $ localIO $ print $ "transfer from "++show ac ++ " to "++show ac ++ " done"
+   local $ sprint $ "transfer from "++show ac ++ " to "++show ac ++ " done"
 
-getBalanceBank ac= liftIO $ do
+getBalanceBank ac= atServer . localIO $ do
     r <- rand
     return $ r * 1000
 
