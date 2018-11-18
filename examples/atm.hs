@@ -53,7 +53,7 @@ main= keep $ initNode atm
 
 data Option= Withdrawal | Deposit | Transfer | BalanceInquiry | Cancel deriving (Show, Read, Typeable)
 
-atm= do
+atm= onBrowser $ do
    card <- waitCard
    validateBank  card
    setData card
